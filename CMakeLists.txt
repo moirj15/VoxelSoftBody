@@ -12,7 +12,8 @@ add_executable(thesis
 
 target_include_directories(thesis PRIVATE
         libs/KHR/include
-        libs/SDL2/include)
+        libs/SDL2/include
+        libs/glm/)
 
 if (WIN32)
     target_link_libraries(thesis PRIVATE

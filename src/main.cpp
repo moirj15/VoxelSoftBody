@@ -1,8 +1,10 @@
 #include "common.h"
 #include "glad.h"
+#include "tiny_obj_loader.h"
 
 #include <cassert>
 #include <cstdio>
+#include <filesystem>
 #include <sdl2/SDL.h>
 #include <string>
 #include <vector>
@@ -118,9 +120,23 @@ class ShaderProgram
     const std::string m_name;
     GLuint m_program;
 
+    struct VertexAttribute {
+        const char *name;
+        GLuint index;
+        GLint components;
+        GLenum type;
+        GLboolean normalized;
+        GLsizei stride;
+        GLintptr offset;
+    };
+
+    std::vector<VertexAttribute> m_vertex_attributes;
+
   public:
-    ShaderProgram(const char *name, const std::vector<std::string> &sources, const std::vector<GLenum> &types) :
-            m_name(name), m_program(glCreateProgram())
+    ShaderProgram(const char *name, const std::vector<std::string> &sources, const std::vector<GLenum> &types,
+        const std::vector<VertexAttribute> &vertex_attributes) :
+            m_name(name),
+            m_program(glCreateProgram()), m_vertex_attributes(vertex_attributes)
     {
         assert(sources.size() == types.size());
         std::vector<GLuint> stageHandles;
@@ -192,21 +208,78 @@ class ShaderProgram
     }
 };
 
+struct Mesh {
+    std::vector<f32> vertices; // xyz
+    std::vector<f32> normals;  // xyz
+    std::vector<u32> indices;
+};
+
+Mesh load_mesh_from_obj(const std::string &path)
+{
+    if (!std::filesystem::exists(path)) {
+        printf("Not a valid path %s\n", path.c_str());
+        assert(0);
+    }
+
+    Mesh mesh;
+    tinyobj::ObjReader reader;
+    reader.ParseFromFile(path);
+    auto attrib = reader.GetAttrib();
+    // assuming one shape for now
+    auto shape = reader.GetShapes()[0];
+    // TODO: calculate a better index buffer
+    u32 index = 0;
+    for (auto indices : shape.mesh.indices) {
+        mesh.vertices.push_back(attrib.vertices[indices.vertex_index * 3]);
+        mesh.vertices.push_back(attrib.vertices[(indices.vertex_index * 3) + 1]);
+        mesh.vertices.push_back(attrib.vertices[(indices.vertex_index * 3) + 2]);
+
+        u32 normal_index = indices.normal_index != -1 ? indices.normal_index : indices.vertex_index;
+        mesh.normals.push_back(attrib.normals[normal_index * 3]);
+        mesh.normals.push_back(attrib.normals[(normal_index * 3) + 1]);
+        mesh.normals.push_back(attrib.normals[(normal_index * 3) + 2]);
+
+        mesh.indices.push_back(index);
+        index++;
+    }
+    return mesh;
+}
+
 class Renderer
 {
     GLuint m_default_vao = GL_NONE;
     ShaderProgram m_phong_program;
 
+    struct PhongShaderVertexLayout {
+        glm::vec3 vertex;
+        glm::vec3 normal;
+    };
+
   public:
     Renderer() :
             m_phong_program("Phong",
                 {ReadEntireFileAsString("shaders/phongLight.vert"), ReadEntireFileAsString("shaders/phongLight.frag")},
-                {GL_VERTEX_SHADER, GL_FRAGMENT_SHADER})
+                {GL_VERTEX_SHADER, GL_FRAGMENT_SHADER},
+                {{.name = "vPosition",
+                     .index = 0,
+                     .components = 3,
+                     .type = GL_FLOAT,
+                     .normalized = false,
+                     .stride = sizeof(PhongShaderVertexLayout),
+                     .offset = offsetof(PhongShaderVertexLayout, vertex)},
+                    {.name = "vNormal",
+                        .index = 1,
+                        .components = 3,
+                        .type = GL_FLOAT,
+                        .normalized = false,
+                        .stried = sizeof(PhongShaderVertexLayout),
+                        .offset = offsetof(PhongShaderVertexLayout, normal)}})
     {
         glGenVertexArrays(1, &m_default_vao);
         glBindVertexArray(m_default_vao);
     }
     void render_frame() {}
+
   private:
 };
 
