@@ -1,12 +1,18 @@
 #include "common.h"
-#include "glad.h"
+// #include "glad.h"
 #include "tiny_obj_loader.h"
 
 #include <cassert>
 #include <cstdio>
+#include <entt/entt.hpp>
 #include <filesystem>
+#include <focus.hpp>
+#include <glm/mat4x4.hpp>
+#include <glm/vec3.hpp>
+#include <optional>
 #include <sdl2/SDL.h>
 #include <string>
+#include <string_view>
 #include <vector>
 
 enum class FilePermissions {
@@ -18,7 +24,7 @@ enum class FilePermissions {
     BinaryReadWrite,
 };
 
-inline FILE *OpenFile(const char *file, FilePermissions permissions)
+FILE *OpenFile(const char *file, FilePermissions permissions)
 {
     const char *cPermissions[] = {"r", "w", "w+", "rb", "wb", "wb+"};
     FILE *ret = nullptr;
@@ -31,7 +37,7 @@ inline FILE *OpenFile(const char *file, FilePermissions permissions)
     return ret;
 }
 
-inline std::string ReadEntireFileAsString(const char *file)
+std::string ReadEntireFileAsString(const char *file)
 {
     auto *fp = OpenFile(file, FilePermissions::Read);
     fseek(fp, 0, SEEK_END);
@@ -46,7 +52,7 @@ inline std::string ReadEntireFileAsString(const char *file)
     return data;
 }
 
-inline std::vector<uint8_t> ReadEntireFileAsVector(const char *file)
+std::vector<uint8_t> ReadEntireFileAsVector(const char *file)
 {
     auto *fp = OpenFile(file, FilePermissions::BinaryRead);
     fseek(fp, 0, SEEK_END);
@@ -61,7 +67,8 @@ inline std::vector<uint8_t> ReadEntireFileAsVector(const char *file)
     return data;
 }
 
-static void DBCallBack(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, GLchar const *message,
+#if 0
+void DBCallBack(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, GLchar const *message,
     void const *userParam)
 {
     printf("DBG: %s\n", message);
@@ -106,7 +113,7 @@ Window init_gfx(s32 width, s32 height, const char *title)
 #endif
     glEnable(GL_PROGRAM_POINT_SIZE);
 
-    printf("%s", glGetString(GL_VERSION));
+    printf("%s\n", glGetString(GL_VERSION));
 
     return {
         .width = width,
@@ -117,9 +124,7 @@ Window init_gfx(s32 width, s32 height, const char *title)
 
 class ShaderProgram
 {
-    const std::string m_name;
-    GLuint m_program;
-
+  public:
     struct VertexAttribute {
         const char *name;
         GLuint index;
@@ -129,6 +134,10 @@ class ShaderProgram
         GLsizei stride;
         GLintptr offset;
     };
+
+  private:
+    const std::string m_name;
+    GLuint m_program;
 
     std::vector<VertexAttribute> m_vertex_attributes;
 
@@ -147,6 +156,7 @@ class ShaderProgram
         GLuint program = glCreateProgram();
         LinkShaderProgram(stageHandles, program);
     }
+
     [[nodiscard]] GLuint handle() const { return m_program; }
 
   private:
@@ -208,13 +218,31 @@ class ShaderProgram
     }
 };
 
+#endif
 struct Mesh {
-    std::vector<f32> vertices; // xyz
-    std::vector<f32> normals;  // xyz
+#pragma pack(push, 1)
+    struct Vertex {
+        glm::vec3 position = {};
+        glm::vec3 normal = {};
+    };
+#pragma pack(pop)
+    std::vector<Vertex> vertices; // xyz
     std::vector<u32> indices;
 };
 
-Mesh load_mesh_from_obj(const std::string &path)
+// Components
+struct LoadMeshParams {
+    std::string filename;
+};
+
+struct MeshBuffers {
+    focus::VertexBuffer vertex_buffer;
+    focus::IndexBuffer index_buffer;
+};
+
+namespace utils
+{
+static Mesh LoadMeshFromObjFile(const std::string &path)
 {
     if (!std::filesystem::exists(path)) {
         printf("Not a valid path %s\n", path.c_str());
@@ -224,69 +252,166 @@ Mesh load_mesh_from_obj(const std::string &path)
     Mesh mesh;
     tinyobj::ObjReader reader;
     reader.ParseFromFile(path);
-    auto attrib = reader.GetAttrib();
+    const auto &attrib = reader.GetAttrib();
     // assuming one shape for now
-    auto shape = reader.GetShapes()[0];
+    const auto &shape = reader.GetShapes()[0];
     // TODO: calculate a better index buffer
     u32 index = 0;
-    for (auto indices : shape.mesh.indices) {
-        mesh.vertices.push_back(attrib.vertices[indices.vertex_index * 3]);
-        mesh.vertices.push_back(attrib.vertices[(indices.vertex_index * 3) + 1]);
-        mesh.vertices.push_back(attrib.vertices[(indices.vertex_index * 3) + 2]);
+    for (const auto &indices : shape.mesh.indices) {
+        Mesh::Vertex vertex;
+        vertex.position.x = attrib.vertices[indices.vertex_index * 3];
+        vertex.position.y = attrib.vertices[indices.vertex_index * 3 + 1];
+        vertex.position.z = attrib.vertices[indices.vertex_index * 3 + 2];
 
-        u32 normal_index = indices.normal_index != -1 ? indices.normal_index : indices.vertex_index;
-        mesh.normals.push_back(attrib.normals[normal_index * 3]);
-        mesh.normals.push_back(attrib.normals[(normal_index * 3) + 1]);
-        mesh.normals.push_back(attrib.normals[(normal_index * 3) + 2]);
+        const u32 normal_index = indices.normal_index != -1 ? indices.normal_index : indices.vertex_index;
+        vertex.normal.x = attrib.normals[normal_index * 3];
+        vertex.normal.y = attrib.normals[normal_index * 3 + 1];
+        vertex.normal.z = attrib.normals[normal_index * 3 + 2];
 
+        mesh.vertices.push_back(vertex);
         mesh.indices.push_back(index);
         index++;
     }
     return mesh;
 }
+} // namespace utils
 
-class Renderer
-{
-    GLuint m_default_vao = GL_NONE;
-    ShaderProgram m_phong_program;
 
-    struct PhongShaderVertexLayout {
-        glm::vec3 vertex;
-        glm::vec3 normal;
+struct System {
+    entt::registry &m_registry;
+    const std::string_view m_system_name;
+
+    constexpr System(entt::registry &registry, const std::string_view &system_name) :
+            m_registry(registry), m_system_name(system_name)
+    {
+    }
+
+    virtual ~System() = default;
+    virtual void Run() = 0;
+};
+
+struct TestSystem final : public System {
+    explicit constexpr TestSystem(entt::registry &registry) : System(registry, "Test-System") {}
+
+    bool already_ran = true;
+
+    void Run() override
+    {
+        if (already_ran) {
+            return;
+        }
+        const auto entity = m_registry.create();
+        m_registry.ctx().emplace<LoadMeshParams>("objects/block.obj");
+        already_ran = true;
+    }
+};
+
+struct InputSystem final : public System {
+    explicit constexpr InputSystem(entt::registry &registry) : System(registry, "Input-System") {}
+
+    void Run() override {}
+};
+
+struct MeshManagementSystem final : public System {
+    // TODO: I could capture references to the fields each system needs access to
+    explicit constexpr MeshManagementSystem(entt::registry &registry) : System(registry, "Mesh-Management-System") {}
+
+    void Run() override
+    {
+        std::string &filename = m_registry.ctx().at<LoadMeshParams>().filename;
+        if (filename.empty()) {
+            return;
+        }
+
+        // TODO something more complex to actually manage the meshes
+        const auto entity = m_registry.create();
+        m_registry.emplace<Mesh>(entity, utils::LoadMeshFromObjFile(filename));
+        filename.clear();
+    }
+};
+
+struct RenderBufferManagementSystem final : public System {
+    explicit constexpr RenderBufferManagementSystem(entt::registry &registry) :
+            System(registry, "Render-Buffer-Management-System")
+    {
+    }
+
+    void Run() override {}
+};
+
+struct RenderSystem final : public System {
+    focus::Device *m_device;
+    focus::Window window;
+    focus::VertexBufferLayout m_phong_layout;
+
+    struct PhongVertexConstantLayout {
+        glm::mat4 camera;
+        glm::mat4 mvp;
+        glm::mat4 normal_mat;
+        glm::vec4 light_position;
     };
 
-  public:
-    Renderer() :
-            m_phong_program("Phong",
-                {ReadEntireFileAsString("shaders/phongLight.vert"), ReadEntireFileAsString("shaders/phongLight.frag")},
-                {GL_VERTEX_SHADER, GL_FRAGMENT_SHADER},
-                {{.name = "vPosition",
-                     .index = 0,
-                     .components = 3,
-                     .type = GL_FLOAT,
-                     .normalized = false,
-                     .stride = sizeof(PhongShaderVertexLayout),
-                     .offset = offsetof(PhongShaderVertexLayout, vertex)},
-                    {.name = "vNormal",
-                        .index = 1,
-                        .components = 3,
-                        .type = GL_FLOAT,
-                        .normalized = false,
-                        .stried = sizeof(PhongShaderVertexLayout),
-                        .offset = offsetof(PhongShaderVertexLayout, normal)}})
-    {
-        glGenVertexArrays(1, &m_default_vao);
-        glBindVertexArray(m_default_vao);
-    }
-    void render_frame() {}
+    struct PhongFragConstantLayout {
+        glm::vec4 light_color;
+        glm::vec4 ambient_light;
+        glm::vec4 ambient_color;
+        glm::vec4 diffuse_color;
+        glm::vec4 specular_color;
+        glm::vec4 coefficients;
+    };
 
-  private:
+    focus::ConstantBuffer m_phong_vertex_constant_buffer;
+    focus::ConstantBuffer m_phong_frag_constant_buffer;
+
+    explicit RenderSystem(entt::registry &registry) :
+            System(registry, "render-System"), m_device(focus::Device::Init(focus::RendererAPI::OpenGL)),
+            window(m_device->MakeWindow(1920, 1080)), m_phong_layout(0, focus::BufferUsage::Default, "INPUT")
+
+    {
+        m_phong_layout.Add("vPosition", focus::VarType::Float3).Add("vNormal", focus::VarType::Float3);
+        focus::ConstantBufferLayout phong_vertex_constant_layout(0, focus::BufferUsage::Default, "vertexConstants");
+        focus::ConstantBufferLayout phong_frag_constant_layout(1, focus::BufferUsage::Default, "fragConstants");
+        m_phong_vertex_constant_buffer =
+            m_device->CreateConstantBuffer(phong_vertex_constant_layout, nullptr, sizeof(PhongVertexConstantLayout));
+        m_phong_frag_constant_buffer =
+            m_device->CreateConstantBuffer(phong_frag_constant_layout, nullptr, sizeof(PhongFragConstantLayout));
+    }
+
+    void Run() override {}
+};
+
+struct UISystem final : public System {
+    explicit constexpr UISystem(entt::registry &registry) : System(registry, "UI-System") {}
+
+    void Run() override {}
+};
+
+struct HeadSystem final : public System {
+    std::vector<std::unique_ptr<System>> m_systems;
+
+    explicit constexpr HeadSystem(entt::registry &registry) : System(registry, "Head-System")
+    {
+        m_systems.emplace_back(new InputSystem(registry));
+        // m_systems.emplace_back(new MeshManagementSystem(entity_list));
+        m_systems.emplace_back(new RenderBufferManagementSystem(registry));
+        m_systems.emplace_back(new RenderSystem(registry));
+        m_systems.emplace_back(new UISystem(registry));
+    }
+
+    void Run() override
+    {
+        for (const auto &system : m_systems) {
+            system->Run();
+        }
+    }
 };
 
 int main(int argc, char **argv)
 {
-    auto window = init_gfx(1920, 1080, "voxel-soft-bodies");
-    Renderer renderer;
+    // auto window = init_gfx(1920, 1080, "voxel-soft-bodies");
+    entt::registry registry;
+    // Renderer renderer(entity_list);
+    HeadSystem head_system(registry);
     bool running = true;
     while (running) {
         SDL_Event e;

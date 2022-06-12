@@ -1,0 +1,8 @@
+﻿.cache
+.idea
+cmake-build-debug
+build
+.vs
+compile_commands.json
+compile_flags.txt
+neovim.json
