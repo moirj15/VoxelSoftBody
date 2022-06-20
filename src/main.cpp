@@ -14,111 +14,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-enum class FilePermissions {
-    Read,
-    Write,
-    ReadWrite,
-    BinaryRead,
-    BinaryWrite,
-    BinaryReadWrite,
-};
-
-FILE *OpenFile(const char *file, FilePermissions permissions)
-{
-    const char *cPermissions[] = {"r", "w", "w+", "rb", "wb", "wb+"};
-    FILE *ret = nullptr;
-    ret = fopen(file, cPermissions[(uint32_t)permissions]);
-    if (!ret) {
-        // TODO: better error handling
-        printf("FAILED TO OPEN FILE: %s\n", file);
-        exit(EXIT_FAILURE);
-    }
-    return ret;
-}
-
-std::string ReadEntireFileAsString(const char *file)
-{
-    auto *fp = OpenFile(file, FilePermissions::Read);
-    fseek(fp, 0, SEEK_END);
-    uint64_t length = ftell(fp);
-    rewind(fp);
-    if (length == 0) {
-        printf("Failed to read file size\n");
-    }
-    std::string data(length, 0);
-    fread(data.data(), sizeof(uint8_t), length, fp);
-    fclose(fp);
-    return data;
-}
-
-std::vector<uint8_t> ReadEntireFileAsVector(const char *file)
-{
-    auto *fp = OpenFile(file, FilePermissions::BinaryRead);
-    fseek(fp, 0, SEEK_END);
-    uint64_t length = ftell(fp);
-    rewind(fp);
-    if (length == 0) {
-        printf("Failed to read file size\n");
-    }
-    std::vector<uint8_t> data(length, 0);
-    fread(data.data(), sizeof(uint8_t), data.size(), fp);
-    fclose(fp);
-    return data;
-}
-
-struct Mesh {
-#pragma pack(push, 1)
-    struct Vertex {
-        glm::vec3 position = {};
-        glm::vec3 normal = {};
-    };
-#pragma pack(pop)
-    std::vector<Vertex> vertices; // xyz
-    std::vector<u32> indices;
-};
-
-// Components
-struct MeshBuffers {
-    focus::VertexBuffer vertex_buffer;
-    focus::IndexBuffer index_buffer;
-};
-
-// this is a little weird
-struct Position {
-    glm::vec3 position;
-};
-
-
-// Deferred Actions
-struct LoadMeshParams {
-    std::string filename;
-};
-
-// Singleton Components
-struct BufferLayouts {
-    focus::VertexBufferLayout phong_vertex_layout;
-    focus::IndexBufferLayout phong_index_layout;
-    focus::ConstantBufferLayout phong_vertex_constant_layout;
-    focus::ConstantBufferLayout phong_frag_constant_layout;
-};
-
-namespace utils
-{
-} // namespace utils
-
-struct System {
-    entt::registry &m_registry;
-    const std::string_view m_system_name;
-
-    constexpr System(entt::registry &registry, const std::string_view &system_name) :
-            m_registry(registry), m_system_name(system_name)
-    {
-    }
-
-    virtual ~System() = default;
-    virtual void Run() = 0;
-};
+#include "system.hpp"
+#include "components.hpp"
+#include "render_system.hpp"
 
 struct TestSystem final : public System {
     explicit constexpr TestSystem(entt::registry &registry) : System(registry, "Test-System") {}
@@ -130,7 +28,6 @@ struct TestSystem final : public System {
         if (already_ran) {
             return;
         }
-        const auto entity = m_registry.create();
         m_registry.ctx().emplace<LoadMeshParams>("objects/block.obj");
         already_ran = true;
     }
@@ -224,79 +121,6 @@ struct RenderBufferManagementSystem final : public System {
     void Run() override {}
 };*/
 
-struct RenderSystem final : public System {
-    struct PhongVertexConstantLayout {
-        glm::mat4 camera;
-        glm::mat4 mvp;
-        glm::mat4 normal_mat;
-        glm::vec4 light_position;
-    };
-
-    struct PhongFragConstantLayout {
-        glm::vec4 light_color{1.0, 1.0, 1.0, 1.0};
-        glm::vec4 ambient_light{0.3, 0.3, 0.3, 1.0};
-        glm::vec4 ambient_color{0.3, 0.3, 0.3, 1.0};
-        glm::vec4 diffuse_color{1.0, 0.3, 0.3, 1.0};
-        glm::vec4 specular_color{0.0, 0.3, 0.3, 1.0};
-        glm::vec4 coefficients{10.0, 10.0, 10.0, 10.0};
-    };
-
-    focus::ConstantBuffer m_phong_vertex_constant_buffer;
-    focus::ConstantBuffer m_phong_frag_constant_buffer;
-
-    focus::Pipeline m_phong_pipeline;
-
-    explicit RenderSystem(entt::registry &registry) : System(registry, "render-System")
-    {
-        auto &context = m_registry.ctx();
-        auto *device = focus::Device::Init(focus::RendererAPI::OpenGL);
-        auto window = device->MakeWindow(1920, 1080);
-        context.emplace<focus::Device *>(device);
-        context.emplace<focus::Window>(window);
-
-        // Populate the Singleton Component for the buffer layouts
-        focus::VertexBufferLayout phong_vertex_layout(0, focus::BufferUsage::Default, "INPUT");
-        phong_vertex_layout.Add("vPosition", focus::VarType::Float3).Add("vNormal", focus::VarType::Float3);
-
-        focus::IndexBufferLayout phong_index_layout(focus::IndexBufferType::U32);
-
-        focus::ConstantBufferLayout phong_vertex_constant_layout(0, focus::BufferUsage::Default, "vertexConstants");
-        focus::ConstantBufferLayout phong_frag_constant_layout(1, focus::BufferUsage::Default, "fragConstants");
-
-        // TODO: Need to figure out if I'm just going to throw these into the registry or if I'll do some management
-        // thing A mix of the two is probably a good approach
-        context.emplace<BufferLayouts>(
-            phong_vertex_layout, phong_index_layout, phong_vertex_constant_layout, phong_frag_constant_layout);
-        m_phong_vertex_constant_buffer =
-            device->CreateConstantBuffer(phong_vertex_constant_layout, nullptr, sizeof(PhongVertexConstantLayout));
-        m_phong_frag_constant_buffer =
-            device->CreateConstantBuffer(phong_frag_constant_layout, nullptr, sizeof(PhongFragConstantLayout));
-
-        focus::PipelineState phong_pipeline_state = {
-            .shader = device->CreateShaderFromSource(
-                "Phong", ReadEntireFileAsString("shaders/phong.vert"), ReadEntireFileAsString("shaders/phong.frag")),
-        };
-        m_phong_pipeline = device->CreatePipeline(phong_pipeline_state);
-    }
-
-    void Run() override
-    {
-        // TODO: for now I'm going to do the buffer updates in a lazy way. In the future I'd like to do this properly
-        // with
-        //       some actual resource sorting and render state sorting.
-        auto *device = m_registry.ctx().at<focus::Device *>();
-        device->BeginPass("Phong pass");
-        device->BindPipeline(m_phong_pipeline);
-        for (const auto &[entity, buffers, mesh] : m_registry.view<const MeshBuffers, const Mesh>().each()) {
-            // TODO (focus): Would be nice to use a single handle for multiple buffers, instead of constantly allocating a new vector each time
-            // or I could just save off the scene state
-            device->BindSceneState({.vb_handles = {buffers.vertex_buffer}, .ib_handle = buffers.index_buffer});
-            device->Draw(focus::Primitive::Triangles, 0, mesh.indices.size());
-        }
-
-        device->EndPass();
-    }
-};
 
 struct UISystem final : public System {
     explicit constexpr UISystem(entt::registry &registry) : System(registry, "UI-System") {}
@@ -314,7 +138,7 @@ class HeadSystem final : public System
         m_systems.emplace_back(new InputSystem(registry));
         // m_systems.emplace_back(new MeshManagementSystem(entity_list));
         //        m_systems.emplace_back(new RenderBufferManagementSystem(registry));
-        m_systems.emplace_back(new RenderSystem(registry));
+        m_systems.emplace_back(CreateRenderSystem(registry));
         m_systems.emplace_back(new UISystem(registry));
     }
 
@@ -326,15 +150,9 @@ class HeadSystem final : public System
     }
 };
 
-#include <windows.h>
-
 int main(int argc, char **argv)
 {
-    // auto window = init_gfx(1920, 1080, "voxel-soft-bodies");
     entt::registry registry;
-    TCHAR buffer[MAX_PATH] = { 0 };
-    GetModuleFileName( NULL, buffer, MAX_PATH );
-    // Renderer renderer(entity_list);
     HeadSystem head_system(registry);
     bool running = true;
     while (running) {

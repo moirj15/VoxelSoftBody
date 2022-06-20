@@ -10,7 +10,7 @@ add_subdirectory(libs/focus)
 add_executable(thesis
         src/main.cpp
         src/tiny_obj_loader.cpp
-        )
+         "src/system.hpp" "src/render_system.cpp" "src/utils.cpp")
 
 target_include_directories(thesis PRIVATE
         #libs/KHR/include
